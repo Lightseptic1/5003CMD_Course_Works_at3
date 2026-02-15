@@ -3,7 +3,7 @@
 #include <vector>
 #include <string>
 #include <fstream>
-
+#include <cstdlib>
 #include <unistd.h>
 #include <sys/wait.h>
 #include <fcntl.h>
@@ -52,13 +52,13 @@ bool parseLine(const string& line, Cmd& c) {
     for (size_t i = 0; i < t.size(); i++) {
         if (t[i] == "<") {
             if (i + 1 >= t.size()) {
-                cerr << "Error: missing input file after <\n";
+                std::cerr << "Error: missing input file after <\n";
                 return false;
             }
             c.inFile = t[++i];
         } else if (t[i] == ">" || t[i] == ">>") {
             if (i + 1 >= t.size()) {
-                cerr << "Error: missing output file after > or >>\n";
+                std::cerr << "Error: missing output file after > or >>\n";
                 return false;
             }
             c.append = (t[i] == ">>");
@@ -78,8 +78,9 @@ environ_1,
 set,
 echo,
 help,
-pause,
+pause_1,
 quit,
+none,
 };
 
 Builtin identify(const string& s) {
@@ -89,7 +90,7 @@ Builtin identify(const string& s) {
     if (s == "set") return set;
     if (s == "echo") return echo;
     if (s == "help") return help;
-    if (s == "pause") return pause;
+    if (s == "pause") return pause_1;
     if (s == "quit") return quit;
     return none;
 }
@@ -105,19 +106,19 @@ bool redirectStdoutForBuiltin(const Cmd& c, int& savedStdout) {
 
     int fd = openOutFile(c.outFile, c.append);
     if (fd < 0) {
-        cerr << "Error: cannot open " << c.outFile << ": " << strerror(errno) << "\n";
+        std::cerr << "Error: cannot open " << c.outFile << ": " << strerror(errno) << "\n";
         return false;
     }
 
     savedStdout = dup(STDOUT_FILENO);
     if (savedStdout < 0) {
-        cerr << "Error: dup failed: " << strerror(errno) << "\n";
+        std::cerr << "Error: dup failed: " << strerror(errno) << "\n";
         close(fd);
         return false;
     }
 
     if (dup2(fd, STDOUT_FILENO) < 0) {
-        cerr << "Error: dup2 failed: " << strerror(errno) << "\n";
+        std::cerr << "Error: dup2 failed: " << strerror(errno) << "\n";
         close(fd);
         close(savedStdout);
         savedStdout = -1;
@@ -139,7 +140,7 @@ void restoreStdout(int savedStdout) {
 void builtin_dir(const string& dir) {
     DIR* d = opendir(dir.c_str());
     if (!d) {
-        cerr << "dir error: " << strerror(errno) << "\n";
+        std::cerr << "dir error: " << strerror(errno) << "\n";
         return;
     }
 
@@ -175,52 +176,61 @@ string buildManualText() {
     out << "help           - Show this help message\n";
     out << "pause          - Wait for the user to press Enter\n";
     out << "quit           - Quit the shell\n";
+    return out.str();
 }
 
 void builtin_help_more() {
     int pfd[2];
     if (pipe(pfd) < 0) {
-        cerr << "pipe failed: " << strerror(errno) << "\n";
+        std::cerr << "help error: pipe failed: " << strerror(errno) << "\n";
         return;
     }
-    swithc (fork()) {
-        case -1:
-            cerr << "fork failed: " << strerror(errno) << "\n";
+
+    pid_t pid = fork();
+    switch (pid) {
+        case -1: {
+            std::cerr << "help error: fork failed: " << strerror(errno) << "\n";
             close(pfd[0]);
             close(pfd[1]);
             return;
+        }
 
         case 0: {
-            if(dup2(pfd[1], STDOUT_FILENO) < 0) {
-                cerr << "dup2 failed: " << strerror(errno) << "\n";
+            if (dup2(pfd[0], STDIN_FILENO) < 0) {
+                std::cerr << "help error: dup2 failed: " << strerror(errno) << "\n";
                 _exit(1);
             }
             close(pfd[0]);
             close(pfd[1]);
-            char* const argvMore[] = {const_cast<char*>("more"), nullptr};
-            execvp("more", argvMore);
-            cerr << "execvp failed: " << strerror(errno) << "\n";
+
+            char* const argvMore[] = { (char*)"more", nullptr };
+            execvp(argvMore[0], argvMore);
+
+            std::cerr << "help error: execvp failed: " << strerror(errno) << "\n";
             _exit(1);
-        } 
+        }
 
         default: {
-            close(pfd[1]);
-            dup2(pfd[0], STDIN_FILENO);
             close(pfd[0]);
-            execlp("more", "more", nullptr);
-            cerr << "execlp failed: " << strerror(errno) << "\n";
-            _exit(1);
-        } break;
+
+            std::string manual = buildManualText();
+            ssize_t wrote = write(pfd[1], manual.c_str(), manual.size());
+            (void)wrote;
+
+            close(pfd[1]);
+            waitpid(pid, nullptr, 0);
+            return;
+        }
     }
 }
-    
+   
 
 void execExternal(const Cmd& c) {
     pid_t pid = fork();
 
     switch (pid) {
         case -1: {
-            cerr << "fork failed: " << strerror(errno) << "\n";
+            std::cerr << "fork failed: " << strerror(errno) << "\n";
             return;
         }
 
@@ -228,7 +238,7 @@ void execExternal(const Cmd& c) {
             if (!c.inFile.empty()) {
                 int fd = open(c.inFile.c_str(), O_RDONLY);
                 if (fd < 0) {
-                    cerr << "Cannot open " << c.inFile << ": " << strerror(errno) << "\n";
+                    std::cerr << "Cannot open " << c.inFile << ": " << strerror(errno) << "\n";
                     _exit(1);
                 }
                 dup2(fd, STDIN_FILENO);
@@ -238,7 +248,7 @@ void execExternal(const Cmd& c) {
             if (!c.outFile.empty()) {
                 int fd = openOutFile(c.outFile, c.append);
                 if (fd < 0) {
-                    cerr << "Cannot open " << c.outFile << ": " << strerror(errno) << "\n";
+                    std::cerr << "Cannot open " << c.outFile << ": " << strerror(errno) << "\n";
                     _exit(1);
                 }
                 dup2(fd, STDOUT_FILENO);
@@ -251,7 +261,7 @@ void execExternal(const Cmd& c) {
             argv.push_back(nullptr);
 
             execvp(argv[0], argv.data());
-            cerr << "Command not found: " << c.args[0] << "\n";
+            std::cerr << "Command not found: " << c.args[0] << "\n";
             _exit(1);
         }
 
@@ -283,7 +293,7 @@ bool runCommand(const Cmd& c) {
                 cout << getCwd() << "\n";
             } else {
                 if (chdir(c.args[1].c_str()) != 0) {
-                    cerr << "cd error: " << strerror(errno) << "\n";
+                    std::cerr << "cd error: " << strerror(errno) << "\n";
                 } else {
                     string now = getCwd();
                     setenv("PWD", now.c_str(), 1);
@@ -302,7 +312,7 @@ bool runCommand(const Cmd& c) {
 
         case set:
             if (c.args.size() >= 3) setenv(c.args[1].c_str(), c.args[2].c_str(), 1);
-            else cerr << "set usage: set VARIABLE VALUE\n";
+            else std::cerr << "set usage: set VARIABLE VALUE\n";
             break;
 
         case echo:
@@ -313,7 +323,7 @@ bool runCommand(const Cmd& c) {
             builtin_help_more();
             break;
 
-        case pause: {
+        case pause_1: {
             cout << "Press Enter to continue...";
             cout.flush();
             string dummy;
@@ -344,7 +354,7 @@ int main(int argc, char** argv) {
     if (argc >= 2) {
         batch.open(argv[1]);
         if (!batch.is_open()) {
-            cerr << "Cannot open batch file: " << argv[1] << "\n";
+            std::cerr << "Cannot open batch file: " << argv[1] << "\n";
             return 1;
         }
         input = &batch;
