@@ -15,7 +15,7 @@ using namespace std;
 
 extern char **environ;
 
-struct Cmd {
+struct Cmd { // Single parsed command line
     vector<string> args;
     string inFile;
     string outFile;
@@ -24,9 +24,11 @@ struct Cmd {
 };
 
 string getCwd() {
-    char buf[4096];
-    if (!getcwd(buf, sizeof(buf))) return "";
-    return string(buf);
+    char* p = getcwd(nullptr, 0);
+    if (!p) return "";
+    string s(p);
+    free(p);
+    return s;
 }
 
 vector<string> splitWS(const string& line) {
@@ -70,19 +72,26 @@ bool parseLine(const string& line, Cmd& c) {
 }
 
 enum Builtin {
-    BI_CD, BI_DIR, BI_ENVIRON, BI_SET, BI_ECHO, BI_HELP, BI_PAUSE, BI_QUIT, BI_NONE
+cd,
+dir,
+environ_1,
+set,
+echo,
+help,
+pause,
+quit,
 };
 
 Builtin identify(const string& s) {
-    if (s == "cd") return BI_CD;
-    if (s == "dir") return BI_DIR;
-    if (s == "environ") return BI_ENVIRON;
-    if (s == "set") return BI_SET;
-    if (s == "echo") return BI_ECHO;
-    if (s == "help") return BI_HELP;
-    if (s == "pause") return BI_PAUSE;
-    if (s == "quit") return BI_QUIT;
-    return BI_NONE;
+    if (s == "cd") return cd;
+    if (s == "dir") return dir;
+    if (s == "environ") return environ_1;
+    if (s == "set") return set;
+    if (s == "echo") return echo;
+    if (s == "help") return help;
+    if (s == "pause") return pause;
+    if (s == "quit") return quit;
+    return none;
 }
 
 int openOutFile(const string& path, bool append) {
@@ -158,107 +167,102 @@ void builtin_echo(const vector<string>& args) {
 
 string buildManualText() {
     ostringstream out;
-    out << "myshell user manual\n\n";
-    out << "Built in commands\n";
-    out << "  cd [DIRECTORY]\n";
-    out << "    Change directory. If DIRECTORY is missing, print current directory.\n";
-    out << "  dir DIRECTORY\n";
-    out << "    List the contents of DIRECTORY.\n";
-    out << "  environ\n";
-    out << "    List all environment variables.\n";
-    out << "  set VARIABLE VALUE\n";
-    out << "    Set VARIABLE to VALUE.\n";
-    out << "  echo [COMMENT]\n";
-    out << "    Print COMMENT with spaces normalized.\n";
-    out << "  help\n";
-    out << "    Display this manual using more.\n";
-    out << "  pause\n";
-    out << "    Wait until Enter is pressed.\n";
-    out << "  quit\n";
-    out << "    Exit the shell.\n\n";
-    out << "Features\n";
-    out << "  Input redirection:  program < inputfile\n";
-    out << "  Output redirection: program > outputfile or program >> outputfile\n";
-    out << "  Background run: add & at end of command line\n";
-    return out.str();
+    out << "cd [DIR]       - Change the current directory to DIR (or print it if DIR is not given)\n";
+    out << "dir [DIR]      - List the contents of directory DIR (or current directory if DIR is not given)\n";
+    out << "environ        - Print all environment variables\n";
+    out << "set VAR VALUE  - Set environment variable VAR to VALUE\n";
+    out << "echo [COMMENT] - Print ARGS to standard output\n";
+    out << "help           - Show this help message\n";
+    out << "pause          - Wait for the user to press Enter\n";
+    out << "quit           - Quit the shell\n";
 }
 
 void builtin_help_more() {
     int pfd[2];
     if (pipe(pfd) < 0) {
-        cerr << "help error: pipe failed: " << strerror(errno) << "\n";
+        cerr << "pipe failed: " << strerror(errno) << "\n";
         return;
     }
+    swithc (fork()) {
+        case -1:
+            cerr << "fork failed: " << strerror(errno) << "\n";
+            close(pfd[0]);
+            close(pfd[1]);
+            return;
 
-    pid_t pid = fork();
-    if (pid < 0) {
-        cerr << "help error: fork failed: " << strerror(errno) << "\n";
-        close(pfd[0]);
-        close(pfd[1]);
-        return;
+        case 0: {
+            if(dup2(pfd[1], STDOUT_FILENO) < 0) {
+                cerr << "dup2 failed: " << strerror(errno) << "\n";
+                _exit(1);
+            }
+            close(pfd[0]);
+            close(pfd[1]);
+            char* const argvMore[] = {const_cast<char*>("more"), nullptr};
+            execvp("more", argvMore);
+            cerr << "execvp failed: " << strerror(errno) << "\n";
+            _exit(1);
+        } 
+
+        default: {
+            close(pfd[1]);
+            dup2(pfd[0], STDIN_FILENO);
+            close(pfd[0]);
+            execlp("more", "more", nullptr);
+            cerr << "execlp failed: " << strerror(errno) << "\n";
+            _exit(1);
+        } break;
     }
-
-    if (pid == 0) {
-        dup2(pfd[0], STDIN_FILENO);
-        close(pfd[0]);
-        close(pfd[1]);
-
-        char* const argvMore[] = { (char*)"more", nullptr };
-        execvp(argvMore[0], argvMore);
-        _exit(1);
-    }
-
-    close(pfd[0]);
-
-    string manual = buildManualText();
-    write(pfd[1], manual.c_str(), manual.size());
-    close(pfd[1]);
-
-    waitpid(pid, nullptr, 0);
 }
+    
 
 void execExternal(const Cmd& c) {
     pid_t pid = fork();
-    if (pid < 0) {
-        cerr << "fork failed: " << strerror(errno) << "\n";
-        return;
-    }
 
-    if (pid == 0) {
-        if (!c.inFile.empty()) {
-            int fd = open(c.inFile.c_str(), O_RDONLY);
-            if (fd < 0) {
-                cerr << "Cannot open " << c.inFile << ": " << strerror(errno) << "\n";
-                _exit(1);
-            }
-            dup2(fd, STDIN_FILENO);
-            close(fd);
+    switch (pid) {
+        case -1: {
+            cerr << "fork failed: " << strerror(errno) << "\n";
+            return;
         }
 
-        if (!c.outFile.empty()) {
-            int fd = openOutFile(c.outFile, c.append);
-            if (fd < 0) {
-                cerr << "Cannot open " << c.outFile << ": " << strerror(errno) << "\n";
-                _exit(1);
+        case 0: {
+            if (!c.inFile.empty()) {
+                int fd = open(c.inFile.c_str(), O_RDONLY);
+                if (fd < 0) {
+                    cerr << "Cannot open " << c.inFile << ": " << strerror(errno) << "\n";
+                    _exit(1);
+                }
+                dup2(fd, STDIN_FILENO);
+                close(fd);
             }
-            dup2(fd, STDOUT_FILENO);
-            close(fd);
+
+            if (!c.outFile.empty()) {
+                int fd = openOutFile(c.outFile, c.append);
+                if (fd < 0) {
+                    cerr << "Cannot open " << c.outFile << ": " << strerror(errno) << "\n";
+                    _exit(1);
+                }
+                dup2(fd, STDOUT_FILENO);
+                close(fd);
+            }
+
+            vector<char*> argv;
+            argv.reserve(c.args.size() + 1);
+            for (const string& s : c.args) argv.push_back(const_cast<char*>(s.c_str()));
+            argv.push_back(nullptr);
+
+            execvp(argv[0], argv.data());
+            cerr << "Command not found: " << c.args[0] << "\n";
+            _exit(1);
         }
 
-        vector<char*> argv;
-        argv.reserve(c.args.size() + 1);
-        for (const string& s : c.args) argv.push_back(const_cast<char*>(s.c_str()));
-        argv.push_back(nullptr);
-
-        execvp(argv[0], argv.data());
-        cerr << "Command not found: " << c.args[0] << "\n";
-        _exit(1);
-    }
-
-    if (!c.background) {
-        waitpid(pid, nullptr, 0);
-    } else {
-        cout << "[bg pid " << pid << "]\n";
+        default: {
+            if (!c.background) {
+                waitpid(pid, nullptr, 0);
+            } else {
+                cout << "[bg pid " << pid << "]\n";
+            }
+            return;
+        }
     }
 }
 
@@ -266,7 +270,7 @@ bool runCommand(const Cmd& c) {
     Builtin b = identify(c.args[0]);
 
     bool needsBuiltinStdoutRedirect =
-        (b == BI_DIR || b == BI_ENVIRON || b == BI_ECHO || b == BI_HELP);
+        (b == dir || b == environ_1 || b == echo || b == help);
 
     int savedStdout = -1;
     if (needsBuiltinStdoutRedirect) {
@@ -274,7 +278,7 @@ bool runCommand(const Cmd& c) {
     }
 
     switch (b) {
-        case BI_CD: {
+        case cd: {
             if (c.args.size() == 1) {
                 cout << getCwd() << "\n";
             } else {
@@ -287,40 +291,40 @@ bool runCommand(const Cmd& c) {
             }
         } break;
 
-        case BI_DIR: {
+        case dir: {
             string d = (c.args.size() >= 2) ? c.args[1] : ".";
             builtin_dir(d);
         } break;
 
-        case BI_ENVIRON:
+        case environ_1:
             builtin_environ();
             break;
 
-        case BI_SET:
+        case set:
             if (c.args.size() >= 3) setenv(c.args[1].c_str(), c.args[2].c_str(), 1);
             else cerr << "set usage: set VARIABLE VALUE\n";
             break;
 
-        case BI_ECHO:
+        case echo:
             builtin_echo(c.args);
             break;
 
-        case BI_HELP:
+        case help:
             builtin_help_more();
             break;
 
-        case BI_PAUSE: {
+        case pause: {
             cout << "Press Enter to continue...";
             cout.flush();
             string dummy;
             getline(cin, dummy);
         } break;
 
-        case BI_QUIT:
+        case quit:
             if (needsBuiltinStdoutRedirect) restoreStdout(savedStdout);
             return false;
 
-        case BI_NONE:
+        case none:
             if (needsBuiltinStdoutRedirect) restoreStdout(savedStdout);
             execExternal(c);
             return true;
