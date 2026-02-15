@@ -1,0 +1,33 @@
+cd
+cd /tmp
+cd /nonexistent
+cd
+dir
+dir /
+dir /nonexistent
+environ
+set MYVAR HelloWorld
+environ
+set MYVAR Updated
+environ
+echo Hello, World!
+echo   Multiple    spaces   and    tabs
+help
+help > help_output.txt
+help >> help_output.txt
+pause
+
+
+/bin/ls
+/bin/ls -l > ls_output.txt
+/bin/cat ls_output.txt
+/bin/cat < ls_output.txt > cat_copy.txt
+/bin/cat ls_output.txt >> cat_copy.txt
+
+/bin/sleep 2 &
+echo Background test done
+
+
+echo Testing combined redirection & > combined.txt
+
+pwd
