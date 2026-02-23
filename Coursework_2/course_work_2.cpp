@@ -17,18 +17,27 @@ static void countline(const string& line, words_map& m) {
     string w;
     w.reserve(32);
     for (unsigned char c : line) {
-        if (isalnum(c)) w.push_back((char)tolower(c));
-        else add_word(m, w);
+        if (isalnum(c)){
+            w.push_back((char)tolower(c));
+        } 
+        else{ 
+            add_word(m, w); 
+        }
     }
     add_word(m, w);
 }
-static void reader(const vector<string>& lines, int s_line, int e_line, words_map& out) {
+static void reader(const vector<string>& lines, int s_line, int e_line, int tid, words_map& out) {
     words_map local;
     local.reserve(4096);
     for (int i = s_line; i < e_line; i++) {
         countline(lines[i], local);
     }
-    out = move(local);
+ out = std::move(local);
+    cout << "\nIntermediate segment result for thread " << tid
+         << " lines [" << s_line << ", " << e_line << ")\n";
+    for (const auto& kv : out) {
+        cout << kv.first << ": " << kv.second << "\n";
+    }
 }
 static void merge_into(words_map& dst, const words_map& src) {
     dst.reserve(dst.size() + src.size());
