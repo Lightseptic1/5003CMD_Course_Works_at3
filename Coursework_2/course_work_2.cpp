@@ -5,7 +5,10 @@
 #include <thread>
 #include <unordered_map>
 #include <cctype>
+#include <functional>
+#include <mutex>
 using namespace std;
+mutex printMutex;
 using words_map = unordered_map<string, long long>;
 static void add_word(words_map& m, string& w) {
     if (!w.empty()) {
@@ -29,14 +32,21 @@ static void countline(const string& line, words_map& m) {
 static void reader(const vector<string>& lines, int s_line, int e_line, int tid, words_map& out) {
     words_map local;
     local.reserve(4096);
+
     for (int i = s_line; i < e_line; i++) {
         countline(lines[i], local);
     }
- out = std::move(local);
-    cout << "\nIntermediate segment result for thread " << tid
-         << " lines [" << s_line << ", " << e_line << ")\n";
-    for (const auto& kv : out) {
-        cout << kv.first << ": " << kv.second << "\n";
+
+    out = std::move(local);
+
+    {
+        lock_guard<mutex> lock(printMutex);
+        cout << "\nIntermediate segment result for thread " << tid
+             << " lines [" << s_line << ", " << e_line << ")\n";
+        for (const auto& kv : out) {
+            cout << kv.first << ": " << kv.second << "\n";
+        }
+        cout << flush;
     }
 }
 static void merge_into(words_map& dst, const words_map& src) {
@@ -47,17 +57,16 @@ static void merge_into(words_map& dst, const words_map& src) {
 }
 static words_map parallel_merge(vector<words_map>& partial) {
     int active = (int)partial.size();
-    if (active == 0){
-         return {};
-    }
-    if (active == 1) {
-        return move(partial[0]);
-    }
+    if (active == 0) return {};
+    if (active == 1) return std::move(partial[0]);
+
     while (active > 1) {
         int pairs = active / 2;
         int leftover = active % 2;
+
         vector<thread> mergeThreads;
         mergeThreads.reserve(pairs);
+
         for (int i = 0; i < pairs; i++) {
             int dstIdx = 2 * i;
             int srcIdx = 2 * i + 1;
@@ -65,40 +74,48 @@ static words_map parallel_merge(vector<words_map>& partial) {
                 merge_into(partial[dstIdx], partial[srcIdx]);
             });
         }
-        for (auto& t : mergeThreads) {
-            t.join();
-        }
-        int write = 0;
-        for (int read = 0; read < active; read += 2) {
-            if (write != read) partial[write] = move(partial[read]);
-            write++;
+        for (auto& t : mergeThreads) t.join();
+
+        vector<words_map> next;
+        next.reserve(pairs + leftover);
+
+        for (int i = 0; i < pairs; i++) {
+            next.push_back(std::move(partial[2 * i])); 
         }
         if (leftover) {
-            int last = active - 1;
-            if (write != last) partial[write] = move(partial[last]);
-            write++;
+            next.push_back(std::move(partial[active - 1]));
         }
-        active = write;
-        partial.resize(active);
+
+        partial = std::move(next);
+        active = (int)partial.size();
     }
-    return move(partial[0]);
+
+    return std::move(partial[0]);
 }
 int main(int argc, char** argv) {
-    if (argc != 3) {
+    if (argc != 2 && argc != 3) {
         cerr << "Usage: " << argv[0] << " <file.txt> <N>\n";
         return 1;
     }
-    string filename = argv[1];
-    int N = 0;
+string filename = argv[1];
+
+int cores = (int)thread::hardware_concurrency();
+if (cores <= 0) cores = 1;
+
+int N;
+
+if (argc == 3) {
     try {
         N = stoi(argv[2]);
+        if (N <= 0) throw std::invalid_argument("non-positive");
     } catch (...) {
-        cerr << "N must be an integer\n";
+        cerr << "N must be a positive integer\n";
         return 1;
     }
-    if (N <= 0) {
-        return 1;
-    }
+} else {
+    N = cores;  
+}
+    filename = argv[1];
     ifstream in(filename);
     if (!in) {
         cerr << "Failed to open file\n";
@@ -113,9 +130,7 @@ int main(int argc, char** argv) {
         cerr << "Empty file\n";
         return 1;
     }
-    int cores = (int)thread::hardware_concurrency();
-    if (cores <= 0) cores = 1;
-    if (N > cores) N = cores;
+    
     if (N > (int)lines.size()) N = (int)lines.size();
     vector<words_map> partial(N);
     vector<int> segStart(N), segEnd(N);
@@ -129,18 +144,13 @@ int main(int argc, char** argv) {
         int end = start + len;
         segStart[i] = start;
         segEnd[i] = end;
-        threads.emplace_back(reader, cref(lines), start, end, ref(partial[i]));
+        threads.emplace_back(reader, std::cref(lines), start, end, i, std::ref(partial[i]));
         start = end;
     }
     for (auto& t : threads) {
         t.join();
     }
-    for (int i = 0; i < N; i++) {
-        cout << "\nThread " << i << " segment lines [" << segStart[i] << ", " << segEnd[i] << ")\n";
-        for (const auto& [word, cnt] : partial[i]) {
-            cout << word << ": " << cnt << "\n";
-        }
-    }
+
     words_map global = parallel_merge(partial);
     cout << "\n===== Merged =====\n";
     for (const auto& [word, cnt] : global) {
@@ -148,3 +158,4 @@ int main(int argc, char** argv) {
     }
     return 0;
 }
+//g++ -std=c++17 -O3 -pthread course_work_2.cpp -o course_work_2
