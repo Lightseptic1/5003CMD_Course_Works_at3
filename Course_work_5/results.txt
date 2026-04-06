@@ -1,0 +1,4 @@
+Algorithm,AverageWaitingTime
+FCFS,16
+SJF,15.4
+RoundRobin,3.6
