@@ -10,83 +10,63 @@ using namespace std;
 
 class MorrisThompson16 {
 private:
-    static string toHex(const unsigned char* data, int length) {
-        stringstream ss;
-        for (int i = 0; i < length; i++) {
-            ss << uppercase << hex << setw(2) << setfill('0') << (int)data[i];
-        }
-        return ss.str();
-    }
+    // Traditional DES-crypt alphabet
+    static constexpr const char* SALT_ALPHABET =
+        "./0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 
-    static unsigned short randomSalt() {
+    static unsigned short randomSalt16() {
         random_device rd;
         mt19937 gen(rd());
         uniform_int_distribution<unsigned short> dist(0, 0xFFFF);
         return dist(gen);
     }
 
-    static void makeDESKey(const string& password, DES_cblock& keyBlock) {
-        unsigned char temp[8] = {0};
+    // Convert full 16-bit salt into a 2-char DES-crypt salt.
+    // This preserves the assignment's 16-bit salt storage while producing
+    // the 2-character salt required by DES_fcrypt().
+    static string salt16ToDesSalt(unsigned short salt16) {
+        char saltChars[3];
+        saltChars[0] = SALT_ALPHABET[salt16 & 0x3F];          // lower 6 bits
+        saltChars[1] = SALT_ALPHABET[(salt16 >> 6) & 0x3F];   // next 6 bits
+        saltChars[2] = '\0';
+        return string(saltChars);
+    }
 
-        for (size_t i = 0; i < 8 && i < password.size(); i++) {
-            unsigned char c = static_cast<unsigned char>(password[i]);
+    static string salt16ToHex(unsigned short salt16) {
+        stringstream ss;
+        ss << uppercase << hex << setw(4) << setfill('0') << salt16;
+        return ss.str();
+    }
 
-            // Keep only low 7 bits, then shift left for DES parity bit
-            unsigned char candidate = (c & 0x7F) << 1;
-
-            // Set odd parity
-            int ones = 0;
-            for (int b = 0; b < 8; b++) {
-                if ((candidate >> b) & 1) {
-                    ones++;
-                }
-            }
-            if (ones % 2 == 0) {
-                candidate |= 0x01;
-            }
-
-            temp[i] = candidate;
+    static bool parseSaltHex(const string& saltHex, unsigned short& saltOut) {
+        if (saltHex.size() != 4) {
+            return false;
         }
 
-        for (int i = 0; i < 8; i++) {
-            keyBlock[i] = temp[i];
-        }
+        stringstream ss(saltHex);
+        ss >> hex >> saltOut;
+        return !ss.fail();
     }
 
 public:
-    static string encryptPassword(const string& password, unsigned short salt) {
-        DES_cblock keyBlock;
-        DES_key_schedule schedule;
+    static string encryptPassword(const string& password, unsigned short salt16) {
+        string desSalt = salt16ToDesSalt(salt16);
 
-        makeDESKey(password, keyBlock);
-        DES_set_odd_parity(&keyBlock);
-        DES_set_key_checked(&keyBlock, &schedule);
+        char output[32] = {0};
 
-        DES_cblock block;
-
-        // Repeat 16-bit salt four times to create 8-byte block
-        unsigned char high = static_cast<unsigned char>((salt >> 8) & 0xFF);
-        unsigned char low  = static_cast<unsigned char>(salt & 0xFF);
-
-        for (int i = 0; i < 8; i += 2) {
-            block[i] = high;
-            block[i + 1] = low;
+        // DES_fcrypt implements the traditional DES-based UNIX password hash
+        // behavior rather than raw ECB encryption.
+        if (DES_fcrypt(password.c_str(), desSalt.c_str(), output) == nullptr) {
+            throw runtime_error("DES_fcrypt failed.");
         }
 
-        // Encrypt 25 times
-        for (int i = 0; i < 25; i++) {
-            DES_ecb_encrypt(&block, &block, &schedule, DES_ENCRYPT);
-        }
-
-        stringstream result;
-        result << uppercase << hex << setw(4) << setfill('0') << salt;
-        result << "$" << toHex(reinterpret_cast<unsigned char*>(block), 8);
-
-        return result.str();
+        // Store full 16-bit salt for the coursework requirement,
+        // followed by the DES-crypt hash output.
+        return salt16ToHex(salt16) + "$" + string(output);
     }
 
     static string encryptPassword(const string& password) {
-        return encryptPassword(password, randomSalt());
+        return encryptPassword(password, randomSalt16());
     }
 
     static bool checkPassword(const string& password, const string& storedHash) {
@@ -96,13 +76,14 @@ public:
         }
 
         string saltHex = storedHash.substr(0, pos);
+        string storedCrypt = storedHash.substr(pos + 1);
 
-        unsigned short salt;
-        stringstream ss;
-        ss << hex << saltHex;
-        ss >> salt;
+        unsigned short salt16;
+        if (!parseSaltHex(saltHex, salt16)) {
+            return false;
+        }
 
-        string recomputed = encryptPassword(password, salt);
+        string recomputed = encryptPassword(password, salt16);
         return recomputed == storedHash;
     }
 };
@@ -122,8 +103,8 @@ int main() {
     };
 
     cout << "Generated list of 10 encrypted passwords:\n\n";
-    vector<string> encryptedList;
 
+    vector<string> encryptedList;
     for (const string& pw : passwords) {
         string enc = MorrisThompson16::encryptPassword(pw);
         encryptedList.push_back(enc);
@@ -131,6 +112,7 @@ int main() {
     }
 
     cout << "\nPassword verification test:\n";
+
     string testPassword;
     string storedHash;
 

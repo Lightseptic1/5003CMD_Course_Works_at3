@@ -26,7 +26,7 @@ bool extractLine(std::string& accumulatedData, std::string& line) {
     return true;
 }
 
-void receiveMessages(int clientSocket, const std::string& nickname) {
+void receiveMessages(int clientSocket) {
     char buffer[1024];
     std::string accumulatedData;
 
